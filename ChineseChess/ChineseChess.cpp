@@ -1,13 +1,13 @@
 #include <conio.h>
 #include <cstdlib>
 #include <fstream>
+#include <io.h>
 #include <iostream>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
 #include <windows.h>
-#include<io.h>
 using namespace std;
 
 // 全局工具函数：重复输出字符串
@@ -48,18 +48,24 @@ namespace ChineseChess {
 
 	// 控制台工具类（封装控制台操作）
 	class Console {
+	public:
+		bool isVC = false;
+		POINT pa = {};
+		POINT pb = {};
+		POINT pt = {};
+		POINT rt = { 37,26 };
 	private:
-		HWND window;                    // 控制台窗口句柄
-		HANDLE outputHandle;            // 输出句柄
-		CONSOLE_FONT_INFO fontInfo;     // 字体信息
-		CONSOLE_CURSOR_INFO cursorInfo; //光标信息
+		HWND window = nullptr;                    // 控制台窗口句柄
+		HANDLE outputHandle = nullptr;            // 输出句柄
+		CONSOLE_FONT_INFO fontInfo = {};     // 字体信息
+		CONSOLE_CURSOR_INFO cursorInfo = {}; // 光标信息
 
 		void setupConsoleWindow() {
 			HWND consoleWindow = GetConsoleWindow();//禁止缩放
 			SetWindowLong(consoleWindow, GWL_STYLE,
 				GetWindowLong(consoleWindow, GWL_STYLE) & ~WS_MAXIMIZEBOX & ~WS_SIZEBOX);
 
-			SMALL_RECT windowRect = { 0, 0, 37, 27 };//窗口大小
+			SMALL_RECT windowRect = { 0, 0, rt.x, rt.y };//窗口大小
 			CONSOLE_SCREEN_BUFFER_INFO bufferInfo;//去除滚动条
 			GetConsoleScreenBufferInfo(outputHandle, &bufferInfo);
 			SMALL_RECT infoRect = windowRect;// bufferInfo.srWindow;
@@ -67,8 +73,6 @@ namespace ChineseChess {
 			SetConsoleScreenBufferSize(outputHandle, bufferSize);
 
 			SetConsoleWindowInfo(outputHandle, true, &windowRect);
-			bool isConsole = _isatty(_fileno(stdin));
-
 		}
 
 		void setupConsoleMode() {
@@ -123,6 +127,33 @@ namespace ChineseChess {
 			gotoxy(0, 0);
 		}
 
+		void AdjustPointForVirtualConsole(int x, int y) {
+			isVC = true;
+			pt.x = x;
+			pt.y = y;
+			auto getPos = [&](POINT& p) {
+				while (1) {
+					if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) {
+						GetCursorPos(&p);
+						ScreenToClient(getWindowHandle(), &p);
+						Sleep(100);
+						if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) break;
+					}
+				}
+				};
+			gotoxy(0, 0);
+			setColor(ConsoleColor::YELLOW, ConsoleColor::RED);
+			cout << "@";
+			setColor(ConsoleColor::YELLOW, ConsoleColor::BLACK);
+			cout << "点击";
+			getPos(pa);
+			gotoxy(x - 5, y);
+			setColor(ConsoleColor::YELLOW, ConsoleColor::BLACK);
+			cout << "点击";
+			setColor(ConsoleColor::YELLOW, ConsoleColor::RED);
+			cout << "@";
+			getPos(pb);
+		}
 		// 获取字体信息（供坐标转换使用）
 		const CONSOLE_FONT_INFO& getFontInfo() const { return fontInfo; }
 		HWND getWindowHandle() const { return window; }
@@ -179,7 +210,7 @@ namespace ChineseChess {
 					cout << messages[i];
 				}
 				// 填充空白覆盖旧消息
-				repeat(" ", 39 - (i < messages.size() ? messages[i].size() : 0));
+				repeat(" ", 39 - (i < messages.size() ? (int)messages[i].size() : 0));
 			}
 			console.setColor(ConsoleColor::YELLOW, ConsoleColor::BLACK);
 		}
@@ -195,6 +226,12 @@ namespace ChineseChess {
 	// 获取鼠标点击的棋盘位置
 	Position GetMousePos(vector<int> KeyInterrrupt = {}) {
 		Position pos;
+		auto trans = [](double x, double y) {
+			return Position{
+				(int)((((x + 1 / 1.5) / 2) + 1) / 2),
+				(int)y
+			};
+			};
 		while (true) {
 			POINT mousePos;
 			if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) {
@@ -204,15 +241,19 @@ namespace ChineseChess {
 				// 坐标转换逻辑：将鼠标像素坐标转换为棋盘格子坐标
 				auto& fontInfo = console.getFontInfo();
 				if (fontInfo.dwFontSize.X == 0 || fontInfo.dwFontSize.Y == 0) {
-					cerr << "不支持鼠标,前往设置更改";
-					pos.x = INT32_MAX;
-					pos.y = INT32_MAX;
-					Sleep(100);
-					return pos;
+					if (console.isVC) {
+						pos = trans((mousePos.x - console.pa.x) / (double)(console.pb.x - console.pa.x) * (console.pt.x - 1),
+							(mousePos.y - console.pa.y) / (double)(console.pb.y - console.pa.y) * (console.pt.y - 1) + 1);
+					}
+					else {
+						cerr << "不支持鼠标,前往设置更改";
+						pos = { INT32_MAX,INT32_MAX };
+						return pos;
+					}
 				}
-				pos.x = (((((mousePos.x / fontInfo.dwFontSize.X) + 1 / 1.5) / 2) + 1) / 2);
-				pos.y = mousePos.y / fontInfo.dwFontSize.Y;
-
+				else pos = trans((mousePos.x / fontInfo.dwFontSize.X), mousePos.y / fontInfo.dwFontSize.Y);
+				Sleep(100);
+				if (pos.x > console.rt.x / 4 || pos.y > console.rt.y - 1)continue;
 				if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) break;
 			}
 			else {
@@ -220,8 +261,7 @@ namespace ChineseChess {
 					int response = _getch();
 					for (auto it = KeyInterrrupt.begin(); it != KeyInterrrupt.end(); it++) {
 						if (*it == response) {
-							pos.x = INT32_MAX;
-							pos.y = INT32_MAX;
+							pos = { INT32_MAX,INT32_MAX };
 							pos.keyInterrupt = response;
 							return pos;
 						}
@@ -692,7 +732,7 @@ namespace ChineseChess {
 			//console.clearScreen();
 			console.gotoxy(0, 0);
 			console.setColor(ConsoleColor::YELLOW, ConsoleColor::BLACK);
-			cout << "保存                            返回\n";
+			cout << "保存                             返回\n";
 			cout << "   0   1   2   3   4   5   6   7   8\n";
 
 			for (int y = 0; y < BOARD_ROWS; ++y) {
@@ -717,7 +757,7 @@ namespace ChineseChess {
 					if (x != 8) cout << "─";
 				}
 
-				cout << "\n";
+				cout << " \n";
 				console.setColor(ConsoleColor::YELLOW, ConsoleColor::BLACK);
 
 				// 绘制九宫格斜线和楚河汉界
@@ -751,29 +791,29 @@ namespace ChineseChess {
 		void drawSpecialLines(int row) const {
 			switch (row) {
 			case 2: // 黑方九宫斜线
-				if (winMode == 1) cout << "  │  │  │  │╲│╱│  │  │  │\n";
-				else cout << "   │   │   │   │ ╲ │ ╱ │   │   │   │\n";
+				if (winMode == 1) cout << "  │  │  │  │╲│╱│  │  │  │ \n";
+				else cout << "   │   │   │   │ ╲ │ ╱ │   │   │   │ \n";
 				break;
 			case 3: // 黑方九宫斜线
-				if (winMode == 1) cout << "  │  │  │  │╱│╲│  │  │  │\n";
-				else cout << "   │   │   │   │ ╱ │ ╲ │   │   │   │\n";
+				if (winMode == 1) cout << "  │  │  │  │╱│╲│  │  │  │ \n";
+				else cout << "   │   │   │   │ ╱ │ ╲ │   │   │   │ \n";
 				break;
 			case 6: // 楚河汉界
-				if (winMode == 1) cout << "  │       楚河       汉界        │\n";
-				else cout << "   │        楚河       汉界        │\n";
+				if (winMode == 1) cout << "  │       楚河       汉界        │ \n";
+				else cout << "   │        楚河       汉界        │ \n";
 				break;
 			case 9: // 红方九宫斜线
-				if (winMode == 1) cout << "  │  │  │  │╲│╱│  │  │  │\n";
-				else cout << "   │   │   │   │ ╲ │ ╱ │   │   │   │\n";
+				if (winMode == 1) cout << "  │  │  │  │╲│╱│  │  │  │ \n";
+				else cout << "   │   │   │   │ ╲ │ ╱ │   │   │   │ \n";
 				break;
 			case 10: // 红方九宫斜线
-				if (winMode == 1) cout << "  │  │  │  │╱│╲│  │  │  │\n";
-				else cout << "   │   │   │   │ ╱ │ ╲ │   │   │   │\n";
+				if (winMode == 1) cout << "  │  │  │  │╱│╲│  │  │  │ \n";
+				else cout << "   │   │   │   │ ╱ │ ╲ │   │   │   │ \n";
 				break;
 			default: // 普通横线
 				if (row >= 11)return;
-				if (winMode == 1) cout << "  │  │  │  │  │  │  │  │  │\n";
-				else cout << "   │   │   │   │   │   │   │   │   │\n";
+				if (winMode == 1) cout << "  │  │  │  │  │  │  │  │  │ \n";
+				else cout << "   │   │   │   │   │   │   │   │   │ \n";
 				break;
 			}
 		}
@@ -842,7 +882,7 @@ namespace ChineseChess {
 			console.gotoxy(0, 0);
 
 			console.setColor(ConsoleColor::YELLOW, ConsoleColor::BLACK);
-			cout << "·----------------------------------·\n";
+			cout << "·----------------------------------" << (console.isVC ? "--" : "") << "·\n";
 			repeat("|                                    |\n", 5);
 			cout << "|              中国象棋              |\n";
 			repeat("|                                    |\n", 3);
@@ -857,7 +897,7 @@ namespace ChineseChess {
 			cout << "|          请不要调整边框位置        |\n";
 			cout << "|   若为虚拟终端，配色改为Campbell   |\n";
 			repeat("|                                    |\n", 1);
-			cout << "·----------------------------------·\n";
+			cout << "·----------------------------------" << (console.isVC ? "--" : "") << "·\n";
 
 			Position menuPos = GetMousePos({ 'c','s','r','e' });
 			if (menuPos.y == MENU_SETTINGS_Y || menuPos.keyInterrupt == 'c') {
@@ -867,7 +907,7 @@ namespace ChineseChess {
 					console.gotoxy(0, 0);
 
 					console.setColor(ConsoleColor::YELLOW, ConsoleColor::BLACK);
-					cout << "·----------------------------------·\n";
+					cout << "·----------------------------------" << (console.isVC ? "--" : "") << "·\n";
 					repeat("|                                    |\n", 5);
 					cout << "|                设置                |\n";
 					repeat("|                                    |\n", 3);
@@ -885,16 +925,20 @@ namespace ChineseChess {
 					cout << "|           >    系统(S)   ";
 					cout << (config.winMode == 1 ? " 7        |\n" : " 10       |\n");
 					repeat("|                                    |\n", 1);
+					cout << "|           >    虚拟终端(A)         |\n";
+					cout << "|                触点校准            |\n";
+					repeat("|                                    |\n", 1);
 					cout << "|           >    退出(Q)             |\n";
-					repeat("|                                    |\n", 5);
+					repeat("|                                    |\n", 2);
 					cout << "|          请不要调整边框位置        |\n";
-					cout << "·----------------------------------·\n";
+					cout << "·----------------------------------" << (console.isVC ? "--" : "") << "·\n";
 
-					Position setPos = GetMousePos({ 'c','r','s','q' });
+					Position setPos = GetMousePos({ 'c','r','s','q' ,'a' });
 					if (setPos.y == 10 || setPos.keyInterrupt == 'c') config.ctrlMode = (config.ctrlMode % 4) + 1; // 循环切换1-4
 					else if (setPos.y == 12 || setPos.keyInterrupt == 'r') config.ruleMode = (config.ruleMode % 2) + 1; // 循环切换1-2
 					else if (setPos.y == 14 || setPos.keyInterrupt == 's') config.winMode = (config.winMode % 2) + 1;   // 循环切换1-2
-					else if (setPos.y == 16 || setPos.keyInterrupt == 'q') break; // 退出设置
+					else if (setPos.y == 16 || setPos.keyInterrupt == 'a') console.AdjustPointForVirtualConsole(console.rt.x, console.rt.y);
+					else if (setPos.y == 19 || setPos.keyInterrupt == 'q') break; // 退出设置
 
 					Sleep(100); // 防止快速切换
 				}
